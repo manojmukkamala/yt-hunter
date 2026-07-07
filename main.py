@@ -1,40 +1,49 @@
 import logging
 
 import yt_dlp
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import YouTubeTranscriptApi, YouTubeTranscriptApiException
 
 
-def get_latest_video(channel_url, ydl_opts):
+def get_latest_video(channel_url: str, ydl_opts: dict) -> list[dict]:
     """Verify the channel is valid and fetches the info. Raises ValueError if not found or inaccessible."""
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(channel_url, download=False)
-            entries = info.get("entries", [])
-            return entries
-        except yt_dlp.utils.DownloadError:
-            raise ValueError(f"Channel not found or inaccessible: {channel_url}")
+        except yt_dlp.utils.DownloadError as e:
+            msg = f"Channel not found or inaccessible: {channel_url}"
+            raise ValueError(msg) from e
+
         channel_name = info.get("channel") or info.get("uploader") or info.get("title")
         if not channel_name and not info.get("entries"):
-            raise ValueError(f"No valid channel data for URL: {channel_url}")
+            msg = f"No valid channel data for URL: {channel_url}"
+            raise ValueError(msg)
+
+        entries = info.get("entries", [])
+        return entries
 
 
-def get_video_details(video_id, ydl_opts):
+def get_video_details(video_id: str, ydl_opts: dict) -> dict:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(
             f"https://www.youtube.com/watch?v={video_id}", download=False
         )
 
 
-def get_transcript(logger, video_id: str, ytt_api):
+def get_transcript(logger: logging.Logger, video_id: str, ytt_api: YouTubeTranscriptApi) -> str | None:
     try:
         transcript = ytt_api.fetch(video_id)
         return " ".join(snippet.text for snippet in transcript)
-    except Exception as e:
-        logger.error(f"No transcript available: {e}")
+    except YouTubeTranscriptApiException:
+        logger.exception("No transcript available")
         return None
 
 
-def check_and_extract(logger, channel_url, ydl_opts=None, ytt_api=None):
+def check_and_extract(
+    logger: logging.Logger,
+    channel_url: str,
+    ydl_opts: dict | None = None,
+    ytt_api: YouTubeTranscriptApi | None = None,
+) -> tuple[int | None, str | None]:
     entries = get_latest_video(channel_url, ydl_opts)
     if not entries:
         logger.error("No videos found.")
