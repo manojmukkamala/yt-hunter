@@ -106,6 +106,7 @@ def summarize_transcript(
         return None
 
     try:
+        logger.info('Generating summary for transcript for %s', title)
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -113,7 +114,7 @@ def summarize_transcript(
                     'role': 'user',
                     'content': (
                         f'You are given the transcript of a YouTube video titled "{title}".\n'
-                        'Summarize it in 2-3 concise sentences covering the key points.'
+                        'Summarize the transcript covering the key points and ingore any promotions and endorsements by the author.'
                     ),
                 },
                 {'role': 'user', 'content': transcript},
@@ -176,7 +177,7 @@ def check_and_extract(
             'llm_summary': llm_summary,
         }
         db_insert(conn, row)
-        logger.info('Inserted video "%s" (id=%s)', row['title'], row['id'])
+        logger.info('Inserted transcript for "%s" (id=%s)', row['title'], row['id'])
         inserted += 1
 
         # TODO #2: Send a message to mattermost with LLM Summary as the text. ref: https://developers.mattermost.com/api-documentation/#/operations/CreatePost
@@ -192,7 +193,7 @@ if __name__ == '__main__':
     )
     logger = logging.getLogger(__name__)
 
-    conn = sqlite3.connect('yt-hunter.db')
+    conn = sqlite3.connect('data/yt-hunter.db')
     db_init(conn)
 
     ytt_api = YouTubeTranscriptApi()
