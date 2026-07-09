@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import openai  # type: ignore[import-untyped]
 import yt_dlp  # type: ignore[import-untyped]
+from pysignalclirestapi import SignalCliRestApi  # type: ignore[import-untyped]
 from youtube_transcript_api import YouTubeTranscriptApi, YouTubeTranscriptApiException
 
 
@@ -30,7 +31,9 @@ CREATE TABLE IF NOT EXISTS video_transcripts (
 
 def db_get_existing_channel_ids(conn: sqlite3.Connection) -> set[str]:
     """Return the set of channel_ids already stored in the table."""
-    cur = conn.execute('SELECT DISTINCT channel_id FROM video_transcripts WHERE channel_id IS NOT NULL')
+    cur = conn.execute(
+        'SELECT DISTINCT channel_id FROM video_transcripts WHERE channel_id IS NOT NULL'
+    )
     return {row[0] for row in cur}
 
 
@@ -92,9 +95,7 @@ INSERT OR IGNORE INTO video_transcripts (
     )
 
 
-def fetch_channel_info(
-    channel_url: str, ydl_opts: dict[str, Any]
-) -> dict[str, Any]:
+def fetch_channel_info(channel_url: str, ydl_opts: dict[str, Any]) -> dict[str, Any]:
     """Fetch full channel info via yt-dlp. Raises ValueError if not found or inaccessible."""
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
@@ -170,6 +171,8 @@ def check_and_extract(
     ytt_api: YouTubeTranscriptApi | None = None,
     llm_client: openai.OpenAI | None = None,
     model: str = 'gemma4:12b',
+    signal_client: SignalCliRestApi | None = None,
+    signal_recepient: str | None = None,
 ) -> tuple[int, int]:
     """Return (stubs_inserted, full_pipeline_inserted)."""
     opts: dict[str, Any] = ydl_opts or {}
@@ -185,7 +188,8 @@ def check_and_extract(
 
         channel_id = cast('str', info.get('channel_id') or info.get('uploader_id'))
         channel_name = cast(
-            'str', info.get('channel') or info.get('uploader') or info.get('title'),
+            'str',
+            info.get('channel') or info.get('uploader') or info.get('title'),
         )
         if not channel_id and not info.get('entries'):
             logger.error('No valid channel data for %s', channel_url)
@@ -198,10 +202,15 @@ def check_and_extract(
 
         if channel_id not in known_channel_ids:
             # New channel: bulk-insert stubs (channel_id, channel_name, id, title only).
-            inserted = db_bulk_insert_stubs(conn, cast('str', channel_id), channel_name, entries)
+            inserted = db_bulk_insert_stubs(
+                conn, cast('str', channel_id), channel_name, entries
+            )
             logger.info(
                 'New channel "%s" (%s): %d video stub(s) inserted for %d total.',
-                channel_name, channel_url, inserted, len(entries),
+                channel_name,
+                channel_url,
+                inserted,
+                len(entries),
             )
             conn.commit()
             known_channel_ids.add(channel_id)
@@ -213,7 +222,9 @@ def check_and_extract(
         new_entries = [e for e in entries if e['id'] not in existing_video_ids]
         logger.info(
             'Channel "%s": %d new video(s) to process out of %d total.',
-            channel_name, len(new_entries), len(entries),
+            channel_name,
+            len(new_entries),
+            len(entries),
         )
 
         for entry in new_entries:
@@ -249,17 +260,35 @@ def check_and_extract(
             }
             db_insert(conn, row)
             logger.info(
-                'Inserted transcript for "%s" (id=%s)', row['title'], row['id'],
+                'Inserted transcript for "%s" (id=%s)',
+                row['title'],
+                row['id'],
             )
             full_inserted += 1
 
-            # TODO: Send a message to signal with LLM Summary as the text. ref: https://github.com/bbernhard/pysignalclirestapi/blob/master/README.md
+            if signal_client and signal_recepient:
+                video_title = details.get('title') or row['title'] or ''
+                message = (
+                    "Here is the summary of '"
+                    + video_title
+                    + "' posted by "
+                    + channel_name
+                    + '  \n'
+                )
+                if llm_summary:
+                    message += llm_summary
+                message += '\n'
+                signal_client.send_message(message=message, recipients=signal_recepient)
 
     conn.commit()
     return stubs_inserted, full_inserted
 
 
 if __name__ == '__main__':
+    from dotenv import load_dotenv
+
+    load_dotenv()  # reads .env file if present; no-op otherwise
+
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -290,6 +319,12 @@ if __name__ == '__main__':
     channel_names = [name.strip() for name in channels_raw.split(',') if name.strip()]
     channel_urls = [f'https://www.youtube.com/@{name}/videos' for name in channel_names]
 
+    SIGNAL_SERVER = os.getenv('SIGNAL_SERVER')
+    SIGNAL_SERVER_NUMBER = os.getenv('SIGNAL_SERVER_NUMBER')
+    SIGNAL_RECEPIENT = os.getenv('SIGNAL_RECEPIENT')
+
+    signal_client = SignalCliRestApi(SIGNAL_SERVER, SIGNAL_SERVER_NUMBER)
+
     stubs_inserted, full_inserted = check_and_extract(
         logger,
         conn,
@@ -298,10 +333,13 @@ if __name__ == '__main__':
         ytt_api=ytt_api,
         llm_client=llm_client,
         model=model,
+        signal_client=signal_client,
+        signal_recepient=SIGNAL_RECEPIENT,
     )
     conn.close()
 
     logger.info(
         'Done. %d stub(s) inserted, %d full transcript(s) sourced.',
-        stubs_inserted, full_inserted,
+        stubs_inserted,
+        full_inserted,
     )
