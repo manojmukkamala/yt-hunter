@@ -39,6 +39,61 @@ export SIGNAL_RECEPIENT=+0987654321      # recipient number to receive summaries
 uv run python main.py
 ```
 
+## Docker
+
+The project includes a `Dockerfile` and a `docker-compose.yml` that bundles the app alongside Ollama (LLM) and signal-cli-rest-api (notifications).
+
+### Run with docker compose
+
+```bash
+# 1. Configure your .env
+cp .env.example .env
+vim .env   # fill in API keys, phone numbers, channels, etc.
+
+# 2. Start all services (Ollama + Signal REST API)
+docker compose up -d
+
+# 3. Register Signal — scan the QR code with your phone open 
+http://localhost:8080/v1/qrcodelink?device_name=yt-hunter
+
+# 4. Run the app
+docker compose run --rm yt-hunter
+```
+
+The `data/` directory is mounted into the container so the SQLite database persists across runs. Ollama and Signal state are stored in Docker named volumes (`ollama-data`, `signal-cli-data`).
+
+### Use the published image
+
+Pre-built images are available on GHCR after each release tag:
+
+```bash
+docker pull ghcr.io/manojmukkamala/yt-hunter:latest
+```
+
+When using the published image directly (without compose), ensure Ollama and Signal REST API are running separately, then set `OPENAI_BASE_URL` and `SIGNAL_SERVER` accordingly. Mount a local directory for the database:
+
+```bash
+docker run --rm -it \
+  -v $(pwd)/data:/app/data \
+  -e OPENAI_BASE_URL=http://host.docker.internal:11434/v1 \
+  -e OPENAI_MODEL=gemma4:12b \
+  -e CHANNELS=TheCarbonLayer \
+  ghcr.io/manojmukkamala/yt-hunter:latest
+```
+
+### Environment Variables for Docker
+
+| Variable | Example | Notes |
+|---|---|---|
+| `DB_PATH` | `data/yt-hunter.db` | SQLite database path inside the container |
+| `OPENAI_BASE_URL` | `http://ollama:11434/v1` | Use `ollama` hostname in compose, `host.docker.internal` externally |
+| `OPENAI_MODEL` | `gemma4:12b` | Model name (must be pulled/available in Ollama) |
+| `OPENAI_API_KEY` | `` | Not required for Ollama; leave empty or set to `unused` |
+| `CHANNELS` | `TheCarbonLayer` | Comma-separated YouTube handles |
+| `SIGNAL_SERVER` | `http://signal-cli-rest-api:8080` | Use `signal-cli-rest-api` hostname in compose |
+| `SIGNAL_SERVER_NUMBER` | `+1234567890` | Server's registered Signal number |
+| `SIGNAL_RECEPIENT` | `+0987654321` | Recipient for summaries |
+
 ## Tooling
 
 | Task | Command |
