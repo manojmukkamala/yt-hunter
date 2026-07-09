@@ -1,7 +1,7 @@
 import logging
 import os
 import sqlite3
-from typing import Any
+from typing import Any, cast
 
 import openai  # type: ignore[import-untyped]
 import yt_dlp  # type: ignore[import-untyped]
@@ -15,6 +15,8 @@ def db_init(conn: sqlite3.Connection) -> None:
 CREATE TABLE IF NOT EXISTS video_transcripts (
     load_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     id TEXT PRIMARY KEY NOT NULL,
+    channel_id TEXT,
+    channel_name TEXT,
     title TEXT,
     duration REAL,
     view_count INTEGER,
@@ -26,20 +28,59 @@ CREATE TABLE IF NOT EXISTS video_transcripts (
     )
 
 
-def db_get_existing_ids(conn: sqlite3.Connection) -> set[str]:
-    """Return the set of video ids already stored in the table."""
-    cur = conn.execute('SELECT id FROM video_transcripts')
+def db_get_existing_channel_ids(conn: sqlite3.Connection) -> set[str]:
+    """Return the set of channel_ids already stored in the table."""
+    cur = conn.execute('SELECT DISTINCT channel_id FROM video_transcripts WHERE channel_id IS NOT NULL')
     return {row[0] for row in cur}
+
+
+def db_get_video_ids_for_channel(conn: sqlite3.Connection, channel_id: str) -> set[str]:
+    """Return the set of video ids already stored for a given channel."""
+    cur = conn.execute(
+        'SELECT id FROM video_transcripts WHERE channel_id = ?', (channel_id,)
+    )
+    return {row[0] for row in cur}
+
+
+def db_bulk_insert_stubs(
+    conn: sqlite3.Connection,
+    channel_id: str,
+    channel_name: str,
+    entries: list[dict[str, Any]],
+) -> int:
+    """Bulk-insert video stubs (channel_id, channel_name, id, title only).
+
+    Returns the number of rows inserted.
+    """
+    data = [
+        (
+            channel_id,
+            channel_name,
+            entry['id'],
+            entry.get('title'),
+        )
+        for entry in entries
+    ]
+    cur = conn.executemany(
+        """\
+INSERT OR IGNORE INTO video_transcripts (channel_id, channel_name, id, title)
+VALUES (?, ?, ?, ?)""",
+        data,
+    )
+    return cur.rowcount
 
 
 def db_insert(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     """Insert a new video record. Skips if the id already exists."""
     conn.execute(
         """\
-INSERT OR IGNORE INTO video_transcripts (id, title, duration, view_count, url, timestamp, transcript, llm_summary)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+INSERT OR IGNORE INTO video_transcripts (
+    id, channel_id, channel_name, title, duration, view_count, url, timestamp, transcript, llm_summary
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             row['id'],
+            row.get('channel_id'),
+            row.get('channel_name'),
             row.get('title'),
             row.get('duration'),
             row.get('view_count'),
@@ -51,10 +92,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
     )
 
 
-def get_latest_video(
+def fetch_channel_info(
     channel_url: str, ydl_opts: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """Verify the channel is valid and fetches the info. Raises ValueError if not found or inaccessible."""
+) -> dict[str, Any]:
+    """Fetch full channel info via yt-dlp. Raises ValueError if not found or inaccessible."""
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(channel_url, download=False)
@@ -62,13 +103,7 @@ def get_latest_video(
             msg = f'Channel not found or inaccessible: {channel_url}'
             raise ValueError(msg) from exc
 
-        channel_name = info.get('channel') or info.get('uploader') or info.get('title')
-        if not channel_name and not info.get('entries'):
-            msg = f'No valid channel data for URL: {channel_url}'
-            raise ValueError(msg)
-
-        entries: list[dict[str, Any]] = info.get('entries', [])
-        return entries
+        return cast('dict[str, Any]', info)
 
 
 def get_video_details(video_id: str, ydl_opts: dict[str, Any]) -> dict[str, Any]:
@@ -130,60 +165,98 @@ def summarize_transcript(
 def check_and_extract(
     logger: logging.Logger,
     conn: sqlite3.Connection,
-    channel_url: str,
+    channel_urls: list[str],
     ydl_opts: dict[str, Any] | None = None,
     ytt_api: YouTubeTranscriptApi | None = None,
     llm_client: openai.OpenAI | None = None,
     model: str = 'gemma4:12b',
-) -> int:
+) -> tuple[int, int]:
+    """Return (stubs_inserted, full_pipeline_inserted)."""
     opts: dict[str, Any] = ydl_opts or {}
-    entries = get_latest_video(channel_url, opts)
-    if not entries:
-        logger.error('No videos found.')
-        return 0
 
-    existing_ids = db_get_existing_ids(conn)
+    known_channel_ids = db_get_existing_channel_ids(conn)
     conn.commit()
 
-    inserted = 0
-    for entry in entries:
-        if entry['id'] in existing_ids:
+    stubs_inserted = 0
+    full_inserted = 0
+
+    for channel_url in channel_urls:
+        info = fetch_channel_info(channel_url, opts)
+
+        channel_id = cast('str', info.get('channel_id') or info.get('uploader_id'))
+        channel_name = cast(
+            'str', info.get('channel') or info.get('uploader') or info.get('title'),
+        )
+        if not channel_id and not info.get('entries'):
+            logger.error('No valid channel data for %s', channel_url)
             continue
 
-        details = get_video_details(entry['id'], opts)
-        if not ytt_api:
-            msg = 'ytt_api is required for transcript extraction'
-            raise ValueError(msg)
-        transcript = get_transcript(logger, entry['id'], ytt_api)
+        entries = info.get('entries', [])
+        if not entries:
+            logger.error('No videos found for %s (%s)', channel_name, channel_url)
+            continue
 
-        llm_summary: str | None = None
-        if llm_client and transcript:
-            llm_summary = summarize_transcript(
-                logger,
-                llm_client,
-                transcript,
-                title=details.get('title') or '',
-                model=model,
+        if channel_id not in known_channel_ids:
+            # New channel: bulk-insert stubs (channel_id, channel_name, id, title only).
+            inserted = db_bulk_insert_stubs(conn, cast('str', channel_id), channel_name, entries)
+            logger.info(
+                'New channel "%s" (%s): %d video stub(s) inserted for %d total.',
+                channel_name, channel_url, inserted, len(entries),
             )
+            conn.commit()
+            known_channel_ids.add(channel_id)
+            stubs_inserted += inserted
+            continue
 
-        row = {
-            'id': entry['id'],
-            'title': details.get('title'),
-            'duration': details.get('duration'),
-            'view_count': details.get('view_count'),
-            'url': f'https://www.youtube.com/watch?v={entry["id"]}',
-            'timestamp': details.get('timestamp'),
-            'transcript': transcript,
-            'llm_summary': llm_summary,
-        }
-        db_insert(conn, row)
-        logger.info('Inserted transcript for "%s" (id=%s)', row['title'], row['id'])
-        inserted += 1
+        # Existing channel: process only videos that are not yet in the DB.
+        existing_video_ids = db_get_video_ids_for_channel(conn, cast('str', channel_id))
+        new_entries = [e for e in entries if e['id'] not in existing_video_ids]
+        logger.info(
+            'Channel "%s": %d new video(s) to process out of %d total.',
+            channel_name, len(new_entries), len(entries),
+        )
 
-        # TODO #2: Send a message to mattermost with LLM Summary as the text. ref: https://developers.mattermost.com/api-documentation/#/operations/CreatePost
+        for entry in new_entries:
+            details = get_video_details(entry['id'], opts)
+
+            transcript = None
+            if not ytt_api:
+                msg = 'ytt_api is required for transcript extraction'
+                raise ValueError(msg)
+            transcript = get_transcript(logger, entry['id'], ytt_api)
+
+            llm_summary: str | None = None
+            if llm_client and transcript:
+                llm_summary = summarize_transcript(
+                    logger,
+                    llm_client,
+                    transcript,
+                    title=details.get('title') or '',
+                    model=model,
+                )
+
+            row = {
+                'id': entry['id'],
+                'channel_id': channel_id,
+                'channel_name': channel_name,
+                'title': details.get('title'),
+                'duration': details.get('duration'),
+                'view_count': details.get('view_count'),
+                'url': f'https://www.youtube.com/watch?v={entry["id"]}',
+                'timestamp': details.get('timestamp'),
+                'transcript': transcript,
+                'llm_summary': llm_summary,
+            }
+            db_insert(conn, row)
+            logger.info(
+                'Inserted transcript for "%s" (id=%s)', row['title'], row['id'],
+            )
+            full_inserted += 1
+
+            # TODO: Send a message to signal with LLM Summary as the text. ref: https://github.com/bbernhard/pysignalclirestapi/blob/master/README.md
 
     conn.commit()
-    return inserted
+    return stubs_inserted, full_inserted
 
 
 if __name__ == '__main__':
@@ -213,10 +286,14 @@ if __name__ == '__main__':
         'skip_download': True,
     }
 
-    count = check_and_extract(
+    channels_raw: str = os.getenv('CHANNELS', 'TheCarbonLayer')
+    channel_names = [name.strip() for name in channels_raw.split(',') if name.strip()]
+    channel_urls = [f'https://www.youtube.com/@{name}/videos' for name in channel_names]
+
+    stubs_inserted, full_inserted = check_and_extract(
         logger,
         conn,
-        channel_url='https://www.youtube.com/@SAMTIME/videos',
+        channel_urls=channel_urls,
         ydl_opts=ydl_opts,
         ytt_api=ytt_api,
         llm_client=llm_client,
@@ -224,4 +301,7 @@ if __name__ == '__main__':
     )
     conn.close()
 
-    logger.info('Done. %d transcripts(s) sourced.', count)
+    logger.info(
+        'Done. %d stub(s) inserted, %d full transcript(s) sourced.',
+        stubs_inserted, full_inserted,
+    )
