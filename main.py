@@ -295,7 +295,8 @@ if __name__ == '__main__':
     )
     logger = logging.getLogger(__name__)
 
-    conn = sqlite3.connect('data/yt-hunter.db')
+    db_path: str = os.getenv('DB_PATH', 'data/yt-hunter.db')
+    conn = sqlite3.connect(db_path)
     db_init(conn)
 
     ytt_api = YouTubeTranscriptApi()
