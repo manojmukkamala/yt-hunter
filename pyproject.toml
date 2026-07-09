@@ -1,0 +1,99 @@
+[project]
+name = "yt-hunter"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "duckdb>=1.5.4",
+    "openai>=2.0.0",
+    "pysignalclirestapi>=0.3.25",
+    "python-dotenv>=1.2.2",
+    "youtube-transcript-api>=1.2.4",
+    "yt-dlp>=2026.7.4",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.1.0",
+    "ruff>=0.15.20",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "C9", # mccabe
+    "N",  # pep8-naming
+    "UP", # pyupgrade
+    "YTT", # yapf
+    "ANN", # flake8-annotations
+    "ASYNC", # flake8-async
+    "S", # flake8-bandit
+    "BLE", # flake8-blind-except
+    "FBT", # flake8-boolean-trap
+    "B", # flake8-bugbear
+    "A", # flake8-builtins
+    "C4", # flake8-comprehensions
+    "DTZ", # flake8-datetimez
+    "T10", # flake8-debugger
+    "EM", # flake8-errmsg
+    "EXE", # flake8-executable
+    "ISC", # flake8-implicit-str-concat
+    "ICN", # flake8-import-conventions
+    "G", # flake8-logging-format
+    "PIE", # flake8-pie
+    "T20", # flake8-print
+    "PYI", # flake8-pyi
+    "PT", # flake8-pytest-style
+    "Q", # flake8-quotes
+    "RSE", # flake8-raise
+    "RUF", # ruff-specific rules
+    "SIM", # flake8-simplify
+    "TID", # flake8-tidy-imports
+    "TCH", # flake8-type-checking
+    "ERA", # eradicate
+    "PD", # pandas-vet
+    "PGH", # pygrep-hooks
+    "PL", # pylint
+    "TRY", # tryceratops
+    "NPY", # numpy-specific rules
+    "PERF", # perflint
+    "FURB", # future removal
+    "LOG", # logging
+]
+ignore = [
+    "E501",  # line too long, handled by formatter
+    "PLR",   # design related pylint rules
+    "Q000",  # Single quotes, handled by formatter
+    "Q003",  # Triple quotes, handled by formatter
+]
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "--import-mode=importlib"
