@@ -8,6 +8,7 @@ dependencies = [
     "duckdb>=1.5.4",
     "openai>=2.0.0",
     "pysignalclirestapi>=0.3.25",
+    "python-dotenv>=1.2.2",
     "youtube-transcript-api>=1.2.4",
     "yt-dlp>=2026.7.4",
 ]
