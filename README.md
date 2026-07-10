@@ -39,6 +39,17 @@ export SIGNAL_RECEPIENT=+0987654321      # recipient number to receive summaries
 uv run python main.py
 ```
 
+## ⚠️ YouTube Transcript API Rate Limits
+
+Calling the transcript API aggressively can get your IP **temporarily blocked by YouTube**. A scheduled run once per day is safe. This is why the first run for a new channel only inserts stubs (video id + title) and leaves transcripts and summaries `NULL` — bulk-pulling transcripts for every existing video would risk hitting those limits.
+
+Going forward, each run processes only **new** videos since the last run, so transcript fetching stays light. Things to watch out for:
+
+- A channel with several videos published between runs may trigger rate limits in a single pass.
+- Being subscribed to many channels multiplies the number of new-video fetches per run.
+
+If you have a lot of channels or channels that publish frequently, space out your runs (e.g., every few hours instead of once) or stick with daily and accept that some older stubs remain without transcripts.
+
 ## Docker
 
 The project includes a `Dockerfile` and a `docker-compose.yml` that bundles the app alongside Ollama (LLM) and signal-cli-rest-api (notifications).
@@ -101,7 +112,6 @@ docker run --rm -it \
 | Lint | `uv run ruff check .` |
 | Format | `uv run ruff format .` |
 | Type-check | `uv run mypy .` |
-| Test | `uv run pytest` (tests/ directory does not yet exist) |
 
 Ruff is configured with an extensive rule set (flake8-bugbear, bandit, perflint, pylint minus design rules). Mypy runs in strict mode (`disallow_untyped_defs`, `warn_return_any`, etc.). The untyped imports (`yt_dlp`, `openai`, `pysignalclirestapi`) are silenced with `type: ignore[import-untyped]` comments so mypy passes cleanly.
 
@@ -197,11 +207,5 @@ Key functions in `main.py`:
 - `youtube-transcript-api` — caption fetching
 - `openai` — LLM summarization via OpenAI-compatible API (works with Ollama, any compatible endpoint)
 - `pysignalclirestapi` — Signal notifications via the signal-cli REST API
-- `duckdb` — listed as a dependency but not yet used; reserved for future use
 
 **Design note:** All environment variable reads (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`, `SIGNAL_SERVER`, `SIGNAL_SERVER_NUMBER`, `SIGNAL_RECEPIENT`) happen in the `if __name__ == '__main__'` block. Functions take explicit parameters only, keeping them deterministic and easy to test.
-
-## Pending Work
-
-- Create the `tests/` directory and add test coverage
-
