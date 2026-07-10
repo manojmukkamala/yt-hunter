@@ -1,6 +1,6 @@
 services:
   yt-hunter:
-    build: .
+    image: ghcr.io/manojmukkamala/yt-hunter:latest
     env_file: .env
     volumes:
       - ./data:/app/data
